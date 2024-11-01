@@ -1,23 +1,26 @@
 from datetime import datetime
-from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.decorators import dag, task
+import json
+import requests
+from kafka import KafkaProducer
+import time
+import logging
 
 
-default = {
+default_args = {
     'owner':'arvind',
     'start_date': datetime(2024,10,16,9,30)
 }
 
 
+@task
 def get_data():
-    import json
-    import requests
-
     response = requests.get('https://randomuser.me/api/')
     response = response.json()['results'][0]
     # print(json.dumps(response, indent=2))
     return response
 
+@task
 def format_data(response):
     data = {}
     location = response['location']
@@ -35,26 +38,35 @@ def format_data(response):
     
     return data
 
-def data_stream():
-    import json
-    response = get_data()
-    response = format_data(response=response)
+@task
+def data_stream(data):
 
-    print(json.dumps(response, indent=2))
+    producer = KafkaProducer(bootstrap_servers = ['broker:29092'], max_block_ms = 5000)
+    current_time = time.time()
 
+    while time.time() < current_time + 60:
+        try:
+            producer.send('users_created', json.dumps(data).encode('utf-8'))
 
+        except Exception as e:
+            logging.error(f"An error occured: {e}")
+            continue
 
+    #print(json.dumps(response, indent=2))
 
-
-# with DAG('user_automation',
-#          default_args=default,
-#          schedule_interval='@daily',
-#          catchup=False) as dag:
     
-#     streaming = PythonOperator(
-#         task_id = 'stream_from_api',
-#         python_callable= data_stream
-#     )
+
+@dag(
+    default_args=default_args,
+    schedule_interval='@daily',
+    catchup=False,
+    tags =['user_automation']    
+)
+    
+def user_automation():
+    response = get_data()
+    formatted_data = format_data(response)
+    data_stream(formatted_data)
 
 
-data_stream()
+user_automation_dag = user_automation()
